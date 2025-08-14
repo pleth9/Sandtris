@@ -22,7 +22,6 @@ To get started, you'll need Python 3.
 1.  **Clone the repository:**
     ```bash
     git clone https://github.com/pleth9/Sandtris.git
-    cd sandtrisAI
     ```
     
 2.  **Install the required packages using pip:**
