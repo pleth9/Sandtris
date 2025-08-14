@@ -46,7 +46,7 @@ python AI/train.py
 
 ## AI Development & Contributing
 
-The current AI is a Convolutional Neural Network (CNN) trained with Deep Q-Learning (DQN). The model (`tetris_nn.py`) and training script (`train.py`) are located in the `AI/` folder.
+The current AI is a Convolutional Neural Network (CNN) trained with Deep Q-Learning (DQN). The model (`tetris_nn.py`) and training script (`train.py`) are located in the [`AI`](AI/) folder.
 
 As of 8/13/25, I have paused development and training, as I need my laptop back for work reasons. I encourage you to experiment with the reward function, model architecture, and training process!
 
