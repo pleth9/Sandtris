@@ -21,7 +21,7 @@ To get started, you'll need Python 3.
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-username/sandtrisAI.git
+    git clone https://github.com/pleth9/Sandtris.git
     cd sandtrisAI
     ```
     
