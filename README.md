@@ -4,7 +4,7 @@
 
 Introducing Sandtris, a physics-based twist on Tetris where blocks dissolve into sand and follow gravity upon collision!
 
-Check out the development and results in this [YouTube Video]()!
+Check out the development and results in this [YouTube Video](https://www.youtube.com/watch?v=2aehlulPRPI)!
 
 <p align="center">
   <img src="media/Untitled.gif" alt="Sandtris Gameplay" width="300"/>
