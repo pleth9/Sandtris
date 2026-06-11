@@ -1,56 +1,124 @@
 # Sandtris
 
-"*But what if it was made of sand...*"
+_But what if it was made of sand?_
 
-Introducing Sandtris, a physics-based twist on Tetris where blocks dissolve into sand and follow gravity upon collision!
+Sandtris is a playable Tetris variant where tetrominoes shatter into falling sand. Clears are not classic row clears: a region clears when same-color sand forms a continuous 4-connected path from the left wall to the right wall.
 
-Check out the development and results in this [YouTube Video](https://www.youtube.com/watch?v=2aehlulPRPI)!
+Check out the original development video on [YouTube](https://www.youtube.com/watch?v=2aehlulPRPI).
 
 <p align="center">
-  <img src="media/Untitled.gif" alt="Sandtris Gameplay" width="300"/>
+  <img src="media/Untitled.gif" alt="Sandtris gameplay" width="300"/>
 </p>
 
-## Gameplay Features
-- Classic Tetris gameplay... but with sand physics!
-- Lines are cleared by creating a continuous span of a color of sand from wall to wall.
-- Scoring system that rewards more difficult clears.
+## Features
 
-## Installation
+- Tetris-style falling pieces that dissolve into grid-aligned sand.
+- Deterministic wall-to-wall clear detection for connected same-color regions.
+- Balanced arcade scoring with clear-size, level, combo, and soft-drop bonuses.
+- Packaged Python entrypoint plus compatibility launchers for the original scripts.
+- Optional AI training dependencies kept separate from the lightweight playable game.
 
-To get started, you'll need Python 3.
+## Install
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/pleth9/Sandtris.git
-    ```
-    
-2.  **Install the required packages using pip:**
-    ```bash
-    pip install pygame torch numpy scipy
-    ```
+Sandtris requires Python 3.10 or newer.
 
-## Usage
+```bash
+git clone https://github.com/pleth9/Sandtris.git
+cd Sandtris
+python -m pip install -e ".[test]"
+```
 
-### Human-Playable Version
-To play the game yourself, run the `player.py` script from the `player` directory:
+For AI training support, install the optional AI extra:
+
+```bash
+python -m pip install -e ".[ai,test]"
+```
+
+## Play
+
+Preferred entrypoint:
+
+```bash
+python -m sandtris
+```
+
+The original launcher still works:
+
 ```bash
 python player/player.py
 ```
 
-### AI Training
-To train the AI model, run the `train.py` script from the `AI` directory:
+Controls:
+
+- Left / Right: move the active piece.
+- Down: soft drop.
+- Up: rotate clockwise.
+- Z: rotate counter-clockwise.
+- P: pause.
+- R: restart after game over.
+
+## Clear Rules
+
+Sandtris clears connected sand, not rigid rows.
+
+- A clearable region must be one color.
+- Connectivity is 4-way: up, down, left, right.
+- The region must touch both side walls.
+- Paths may bend; they do not need to be straight horizontal rows.
+- Different-color sand breaks the connection.
+
+## Scoring
+
+Scoring lives in `sandtris.core.scoring`.
+
+- Base points come from the number of cleared sand particles.
+- Larger clears earn stronger multipliers.
+- Higher levels slightly increase clear value.
+- Consecutive clears add combo bonuses.
+- Soft-drop points are tracked and folded into the next clear.
+
+## Project Layout
+
+```text
+sandtris/
+  core/       Grid, particles, simulation, tetrominoes, clear detection, scoring
+  app/        Pygame player app
+  ai/         Optional AI model/training compatibility
+player/       Compatibility launcher for the old command
+AI/           Legacy AI trainer entrypoint
+tests/        Headless pytest coverage for core gameplay
+```
+
+Public gameplay APIs include:
+
+- `sandtris.core.Grid`
+- `sandtris.core.Simulation`
+- `sandtris.core.SandTetromino`
+- `sandtris.core.find_wall_to_wall_clears`
+- `sandtris.core.ScoreState`
+- `sandtris.core.calculate_clear_score`
+
+## AI Training
+
+The AI trainer is still experimental and computationally heavy. Install the AI extra first, then run:
+
+```bash
+python -m sandtris.ai.train
+```
+
+The legacy command is also preserved:
+
 ```bash
 python AI/train.py
 ```
-*Note: Training is computationally intensive. The code is configured for Apple's MPS for Apple Silicon Macs. Use CUDA for NVIDIA GPUs or just CPU backend.*
 
+## Development
 
-## AI Development & Contributing
+Run the fast headless checks:
 
-The current AI is a Convolutional Neural Network (CNN) trained with Deep Q-Learning (DQN). The model (`tetris_nn.py`) and training script (`train.py`) are located in the [AI](AI/) folder.
+```bash
+python -m compileall sandtris tests
+pytest
+```
 
-As of 8/13/25, I have paused development and training, as I need my laptop back for work reasons. I encourage you to experiment with the reward function, model architecture, and training process!
-
-Please feel free to make a PR with your updated training scripts or saved brains! I am greatly curious as to how the reward function can be improved alongside other parts of the training process!
-
-### If we get enough brains, we can go from a plethora of bees to a hive mind of brains!
+When changing gameplay, add or update tests for clear detection, sand motion, scoring, and tetromino collision behavior.
