@@ -12,6 +12,37 @@ def test_sand_falls_down_when_empty():
 
     assert sim.grid.get_cell(1, 2) is None
     assert sim.grid.get_cell(2, 2) is not None
+    assert sim.grid.get_color_grid()[1, 2] == -1
+    assert sim.grid.get_color_grid()[2, 2] == 0
+
+
+def test_grid_color_cache_updates_on_set_move_and_remove():
+    sim = Simulation(width=4, height=4, cell_size=1)
+    sim.grid.set_cell(0, 0, SandParticle(color=RED, base_color=RED))
+
+    assert sim.grid.get_color_grid()[0, 0] == 0
+
+    sim.grid.move_particle(0, 0, 1, 0)
+    assert sim.grid.get_color_grid()[0, 0] == -1
+    assert sim.grid.get_color_grid()[1, 0] == 0
+
+    sim.grid.remove_particle(1, 0)
+    assert sim.grid.get_color_grid()[1, 0] == -1
+
+
+def test_sand_above_removed_particle_reactivates():
+    sim = Simulation(width=3, height=3, cell_size=1)
+    assert sim.spawn_sand(0, 2, color=RED, base_color=RED)
+    assert sim.spawn_sand(1, 2, color=RED, base_color=RED)
+    assert sim.spawn_sand(2, 2, color=RED, base_color=RED)
+    assert sim.spawn_sand(1, 1, color=RED, base_color=RED)
+    sim.update()
+
+    sim.remove_particle(2, 1)
+    sim.update()
+
+    assert sim.grid.get_cell(1, 1) is None
+    assert sim.grid.get_cell(2, 1) is not None
 
 
 def test_sand_respects_floor_and_walls():

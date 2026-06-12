@@ -4,3 +4,10 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+.DS_Store
+
+# Sandtris training outputs/checkpoints
+*.pth
+loss_history.json
+headless_stats*.json
+steps_done*.json

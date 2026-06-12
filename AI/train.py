@@ -1,3 +1,10 @@
+from pathlib import Path
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import pygame
 from simulation import Simulation
 from sand_tetromino import SandTetromino
@@ -6,11 +13,11 @@ import numpy as np
 from tetris_nn import TetrisNet
 import torch
 from collections import deque
+import copy
 import random
 import os
 import threading
 from scipy.ndimage import label
-import cProfile, pstats
 from contextlib import nullcontext
 import json
 import math
@@ -71,7 +78,7 @@ cumulative_score = 0.0
 
 BASE_COLORS = [
     (255, 0, 0),
-    (0, 0, 255),
+    (0, 128, 255),
     (0, 200, 0),
     (255, 255, 0),
 ]
@@ -91,10 +98,10 @@ active_color = random.choice(BASE_COLORS)
 next_color = random.choice(BASE_COLORS)
 spawn_x = get_centered_spawn_x(SandTetromino, PLAYFIELD_WIDTH, box_size, color=active_color)
 tetrominoes = []
-active_tetromino = SandTetromino(spawn_x, spawn_y, box_size, color=active_color)
+active_tetromino = SandTetromino(spawn_x, spawn_y, box_size, color=active_color, base_color=active_color)
 tetrominoes.append(active_tetromino)
 next_spawn_x = get_centered_spawn_x(SandTetromino, PLAYFIELD_WIDTH, box_size, color=next_color)
-next_piece = SandTetromino(next_spawn_x, spawn_y, box_size, color=next_color)
+next_piece = SandTetromino(next_spawn_x, spawn_y, box_size, color=next_color, base_color=next_color)
 
 move_left = False
 move_right = False
@@ -149,25 +156,29 @@ def get_gravity(level):
     return 2.5 * 1.1**(level / 5)
 
 def build_color_index(grid):
-    """Build a color index array from the grid for reward calculations."""
+    """Build a 0-empty, 1..4-color index array from the cached grid."""
+    if hasattr(grid, "get_color_grid"):
+        cached = grid.get_color_grid()
+        return np.where(cached >= 0, cached + 1, 0).astype(np.uint8, copy=False)
+
     rows, cols = grid.rows, grid.columns
     colors = np.zeros((rows, cols), dtype=np.uint8)
-    
     for r in range(rows):
         for c in range(cols):
             p = grid.cells[r][c]
-            if p is not None:
-                col = getattr(p, 'base_color', getattr(p, 'color', None))
-                if col is not None:
-                    if col[0] > 200 and col[1] < 100 and col[2] < 100:
-                        colors[r, c] = 1
-                    elif col[2] > 100 and col[0] < 100 and col[1] < 200:
-                        colors[r, c] = 2
-                    elif col[0] < 100 and col[1] > 150 and col[2] < 100:
-                        colors[r, c] = 3
-                    elif col[0] > 200 and col[1] > 200 and col[2] < 100:
-                        colors[r, c] = 4
-    
+            if p is None:
+                continue
+            col = getattr(p, 'base_color', getattr(p, 'color', None))
+            if col is None:
+                continue
+            if col[0] > 200 and col[1] < 100 and col[2] < 100:
+                colors[r, c] = 1
+            elif col[2] > 100 and col[0] < 100 and col[1] < 200:
+                colors[r, c] = 2
+            elif col[0] < 100 and col[1] > 150 and col[2] < 100:
+                colors[r, c] = 3
+            elif col[0] > 200 and col[1] > 200 and col[2] < 100:
+                colors[r, c] = 4
     return colors
 
 def prepare_nn_input(grid):
@@ -239,43 +250,37 @@ def calculate_strategic_height_penalty(color_index):
         
     return height_penalty
 
-def calculate_reward(color_index, score_diff, game_over):
-    """Calculate reward based on game state with focus on spanning potential and score."""
-    global score, last_reward_components
+def calculate_reward(color_index, clear_points, game_over):
+    """Calculate sparse DQN reward from actual clear events and survival risk."""
+    global last_reward_components
     if game_over:
-        return -5000.0
-    
-    spanning_potential = calculate_spanning_potential(color_index)
-    height_penalty = calculate_strategic_height_penalty(color_index)
-    
-    fragmentation_penalty = 0
-    for color in range(1, 5):
-        color_mask = (color_index == color)
-        if np.any(color_mask):
-            labeled_array, num_features = label(color_mask)
-            if num_features > 2:
-                fragmentation_penalty -= (num_features - 2) * 100
-    
-    clear_board_reward = -np.sum(get_column_heights(color_index)) * 0.1
-    
-    score_tier = int(score // 10000)
-    score_multiplier = 0.4 * (1.2 ** score_tier)
-    score_reward = score * score_multiplier
+        last_reward_components = {
+            'Step': 0.0,
+            'Clear': 0.0,
+            'Height': 0.0,
+            'Danger': -1000.0,
+        }
+        return -1000.0
 
-    total_reward = (
-        spanning_potential * 1.5 +
-        height_penalty +
-        fragmentation_penalty +
-        clear_board_reward +
-        score_reward
-    )
+    heights = get_column_heights(color_index)
+    max_height = int(np.max(heights)) if len(heights) else 0
+    mean_height = float(np.mean(heights)) if len(heights) else 0.0
+    height_ratio = max_height / max(1, color_index.shape[0])
+
+    step_penalty = -1.0
+    clear_reward = float(clear_points) * 0.5
+    height_penalty = -0.02 * mean_height
+    danger_penalty = 0.0
+    if height_ratio > 0.70:
+        danger_penalty = -200.0 * ((height_ratio - 0.70) / 0.30) ** 2
+
+    total_reward = step_penalty + clear_reward + height_penalty + danger_penalty
 
     last_reward_components = {
-        'Spanning': spanning_potential * 1.5,
-        'Height Penalty': height_penalty,
-        'Fragmentation': fragmentation_penalty,
-        'Clear Board': clear_board_reward,
-        'Score': score_reward
+        'Step': step_penalty,
+        'Clear': clear_reward,
+        'Height': height_penalty,
+        'Danger': danger_penalty,
     }
     
     return total_reward
@@ -343,6 +348,7 @@ if device.type == "mps":
     except Exception as e:
         print(f"MPS test failed: {e}, falling back to CPU")
         device = torch.device("cpu")
+        net = net.to(device)
 
 model_loaded = False
 if os.path.exists(MODEL_PATH):
@@ -356,6 +362,9 @@ if os.path.exists(MODEL_PATH):
         model_loaded = False
 if not model_loaded:
     print("No saved model found, starting fresh.")
+
+target_net = copy.deepcopy(net).to(device, dtype=torch.float32)
+target_net.eval()
 
 steps_done = 0
 generation = 1
@@ -391,31 +400,30 @@ EPSILON_START = 1.0
 EPSILON_END = 0.01
 EPSILON_DECAY = 7500000
 LEARNING_RATE = 1e-5
+TARGET_UPDATE_STEPS = 1000
+TRAIN_EVERY_ACTIONS = 4
 
 replay_buffer = deque(maxlen=REPLAY_SIZE)
 epsilon = max(EPSILON_END, EPSILON_START - steps_done / EPSILON_DECAY)
 optimizer = torch.optim.Adam(net.parameters(), lr=LEARNING_RATE)
-loss_fn = torch.nn.MSELoss()
+loss_fn = torch.nn.SmoothL1Loss()
 
 last_state = prepare_nn_input(simulation.grid)
 last_score = score
+train_steps_done = 0
 
 train_frame_counter = 0
-training_thread = None
-training_lock = threading.Lock()
 
 TERMINAL_BUFFER_SIZE = 8
 terminal_lines = []
 terminal_highlight = []
 
-import atexit
-training_active = False
 def dqn_train_step():
     """Perform one DQN training step with experience replay."""
+    global train_steps_done
     if len(replay_buffer) < BATCH_SIZE:
         return
-    effective_batch_size = min(16, len(replay_buffer))
-    batch = random.sample(replay_buffer, effective_batch_size)
+    batch = random.sample(replay_buffer, BATCH_SIZE)
     states, actions, rewards, next_states, dones = zip(*batch)
     states = torch.cat([s.unsqueeze(0) if s.ndim == 3 else s for s in states])
     next_states = torch.cat([s.unsqueeze(0) if s.ndim == 3 else s for s in next_states])
@@ -427,12 +435,17 @@ def dqn_train_step():
     optimizer.zero_grad()
     q_vals = net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
     with torch.no_grad():
-        next_q = net(next_states).max(1)[0]
+        next_actions = net(next_states).argmax(1)
+        next_q = target_net(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
     target_q = rewards + GAMMA * next_q * (~dones)
     loss = loss_fn(q_vals, target_q)
     loss.backward()
     torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
     optimizer.step()
+    train_steps_done += 1
+    if train_steps_done % TARGET_UPDATE_STEPS == 0:
+        target_net.load_state_dict(net.state_dict())
+        target_net.eval()
     try:
         loss_val = float(loss.item())
         if not math.isnan(loss_val) and not math.isinf(loss_val):
@@ -454,35 +467,14 @@ def dqn_train_step():
         torch.mps.empty_cache()
     del states, next_states, actions, rewards, dones, q_vals, next_q, target_q, loss
 
-def training_worker():
-    """Background worker thread for continuous training."""
-    global training_active
-    while training_active:
-        with training_lock:
-            dqn_train_step()
-        time.sleep(0.25)
-
-def start_training_thread():
-    """Start the background training thread."""
-    global training_thread, training_active
-    if training_thread is None or not training_thread.is_alive():
-        training_active = True
-        training_thread = threading.Thread(target=training_worker, daemon=True)
-        training_thread.start()
-
-def stop_training_thread():
-    """Stop the background training thread."""
-    global training_active, training_thread
-    training_active = False
-    if training_thread and training_thread.is_alive():
-        training_thread.join(timeout=2.0)
-
-start_training_thread()
-atexit.register(stop_training_thread)
-
 def add_terminal_line(text, highlight=False):
     """Add a line to the terminal display buffer."""
     global terminal_lines, terminal_highlight
+    terminal_lines.append(text)
+    terminal_highlight.append(highlight)
+    if len(terminal_lines) > TERMINAL_BUFFER_SIZE:
+        terminal_lines = terminal_lines[-TERMINAL_BUFFER_SIZE:]
+        terminal_highlight = terminal_highlight[-TERMINAL_BUFFER_SIZE:]
 
 last_action = 'none'
 last_action_idx = ACTIONS.index('none')
@@ -606,9 +598,9 @@ while running:
         next_spawn_x = get_centered_spawn_x(SandTetromino, PLAYFIELD_WIDTH, box_size, color=next_color)
         simulation = Simulation(PLAYFIELD_WIDTH, PLAYFIELD_HEIGHT, CELL_SIZE)
         tetrominoes = []
-        active_tetromino = SandTetromino(spawn_x, spawn_y, box_size, color=active_color)
+        active_tetromino = SandTetromino(spawn_x, spawn_y, box_size, color=active_color, base_color=active_color)
         tetrominoes.append(active_tetromino)
-        next_piece = SandTetromino(next_spawn_x, spawn_y, box_size, color=next_color)
+        next_piece = SandTetromino(next_spawn_x, spawn_y, box_size, color=next_color, base_color=next_color)
         prev_broken = False
         cumulative_score += score
         score = 0
@@ -726,10 +718,11 @@ while running:
     total_pixels_cleared = 0
     sand_clear_score_this_frame = 0
     while True:
-        cleared = simulation.grid.flood_fill_clear(0, simulation.grid.columns - 1)
+        cleared, regions = simulation.grid.clear_wall_to_wall_regions()
         if cleared == 0:
             break
         total_pixels_cleared += cleared
+        simulation.activate_positions({position for region in regions for position in region.positions})
 
     if total_pixels_cleared > 0:
         points = get_points_for_pixels(total_pixels_cleared)
@@ -757,29 +750,21 @@ while running:
         active_tetromino = next_piece
         next_color = random.choice(BASE_COLORS)
         next_spawn_x = get_centered_spawn_x(SandTetromino, PLAYFIELD_WIDTH, box_size, color=next_color)
-        next_piece = SandTetromino(next_spawn_x, spawn_y, box_size, color=next_color)
+        next_piece = SandTetromino(next_spawn_x, spawn_y, box_size, color=next_color, base_color=next_color)
         tetrominoes.append(active_tetromino)
     active_tetromino.gravity = get_gravity(level)
 
-    current_score = score
-    score_diff = current_score - last_score
-    last_score = current_score
-    
-    grid_height = simulation.grid.rows
     color_index = build_color_index(simulation.grid)
-    sand_height = 0
-    for row in range(color_index.shape[0]):
-        if np.any(color_index[row] > 0):
-            sand_height = color_index.shape[0] - row
-            break
 
-    reward = calculate_reward(color_index, score_diff, game_over)
+    reward = calculate_reward(color_index, sand_clear_score_this_frame, game_over)
     cumulative_reward += reward
     next_state = prepare_nn_input(simulation.grid)
     done = game_over
 
     if ai_action_this_frame:
         replay_buffer.append((last_state, last_action_idx, reward, next_state, done))
+        if steps_done % TRAIN_EVERY_ACTIONS == 0:
+            dqn_train_step()
 
     last_reward = reward
     last_state = next_state

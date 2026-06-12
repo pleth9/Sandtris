@@ -65,8 +65,8 @@ class SandtrisGame:
         next_color = random.choice(BASE_COLORS)
         spawn_x = get_centered_spawn_x(SandTetromino, PLAYFIELD_WIDTH, BOX_SIZE, color=active_color)
         next_spawn_x = get_centered_spawn_x(SandTetromino, PLAYFIELD_WIDTH, BOX_SIZE, color=next_color)
-        self.active_tetromino = SandTetromino(spawn_x, self.spawn_y, BOX_SIZE, color=active_color)
-        self.next_piece = SandTetromino(next_spawn_x, self.spawn_y, BOX_SIZE, color=next_color)
+        self.active_tetromino = SandTetromino(spawn_x, self.spawn_y, BOX_SIZE, color=active_color, base_color=active_color)
+        self.next_piece = SandTetromino(next_spawn_x, self.spawn_y, BOX_SIZE, color=next_color, base_color=next_color)
         self.tetrominoes = [self.active_tetromino]
         self.game_over = False
 
@@ -174,10 +174,11 @@ class SandtrisGame:
     def resolve_clears(self) -> None:
         total_cleared = 0
         while True:
-            cleared, _regions = self.simulation.grid.clear_wall_to_wall_regions()
+            cleared, regions = self.simulation.grid.clear_wall_to_wall_regions()
             if cleared == 0:
                 break
             total_cleared += cleared
+            self.simulation.activate_positions({position for region in regions for position in region.positions})
 
         if total_cleared:
             self.score_state.record_clear(total_cleared)
@@ -193,7 +194,7 @@ class SandtrisGame:
         self.active_tetromino = self.next_piece
         next_color = random.choice(BASE_COLORS)
         next_spawn_x = get_centered_spawn_x(SandTetromino, PLAYFIELD_WIDTH, BOX_SIZE, color=next_color)
-        self.next_piece = SandTetromino(next_spawn_x, self.spawn_y, BOX_SIZE, color=next_color)
+        self.next_piece = SandTetromino(next_spawn_x, self.spawn_y, BOX_SIZE, color=next_color, base_color=next_color)
         self.tetrominoes.append(self.active_tetromino)
         self.active_tetromino.gravity = get_gravity(self.score_state.level)
 

@@ -23,17 +23,45 @@ class Grid:
         self.cells: list[list[SandParticle | None]] = [
             [None for _ in range(self.columns)] for _ in range(self.rows)
         ]
+        self.particle_count = 0
+        self.mutation_version = 0
         self.highlighted_cells: set[tuple[int, int]] = set()
-        self._color_grid_cache: np.ndarray | None = None
-        self._cache_dirty = True
+        self._color_grid_cache = np.full((self.rows, self.columns), -1, dtype=np.int16)
+        self._rgb_grid_cache = np.zeros((self.rows, self.columns, 3), dtype=np.uint8)
+        self._surface_cache: object | None = None
+        self._cache_dirty = False
+        self._surface_dirty = True
 
     def mark_cache_dirty(self) -> None:
         self._cache_dirty = True
+        self._surface_dirty = True
+
+    def _particle_color_index(self, particle: SandParticle | None) -> int:
+        if particle is None:
+            return -1
+        color_index = get_color_index(get_gradient_base_color(particle))
+        return -1 if color_index is None else color_index
+
+    def _particle_rgb(self, particle: SandParticle | None) -> Color:
+        if particle is None:
+            return (0, 0, 0)
+        return getattr(particle, "color", (200, 200, 200))
+
+    def _set_cache_cell(self, row: int, col: int, particle: SandParticle | None) -> None:
+        if self._cache_dirty:
+            return
+        self._color_grid_cache[row, col] = self._particle_color_index(particle)
+        self._rgb_grid_cache[row, col] = self._particle_rgb(particle)
+        self._surface_dirty = True
+
+    def _mark_mutated(self) -> None:
+        self.mutation_version += 1
 
     def get_color_grid(self) -> np.ndarray:
         """Return a cached canonical color-index grid."""
-        if self._cache_dirty or self._color_grid_cache is None:
+        if self._cache_dirty:
             color_grid = np.full((self.rows, self.columns), -1, dtype=np.int16)
+            rgb_grid = np.zeros((self.rows, self.columns, 3), dtype=np.uint8)
             for row in range(self.rows):
                 for col in range(self.columns):
                     particle = self.cells[row][col]
@@ -42,11 +70,19 @@ class Grid:
                     color_index = get_color_index(get_gradient_base_color(particle))
                     if color_index is not None:
                         color_grid[row, col] = color_index
+                    rgb_grid[row, col] = getattr(particle, "color", (200, 200, 200))
 
             self._color_grid_cache = color_grid
+            self._rgb_grid_cache = rgb_grid
             self._cache_dirty = False
+            self._surface_dirty = True
 
         return self._color_grid_cache
+
+    def get_rgb_grid(self) -> np.ndarray:
+        """Return a cached RGB grid for fast pygame rendering."""
+        self.get_color_grid()
+        return self._rgb_grid_cache
 
     def is_position_valid(self, row: int, col: int) -> bool:
         return 0 <= row < self.rows and 0 <= col < self.columns
@@ -64,8 +100,14 @@ class Grid:
     def set_cell(self, row: int, col: int, particle: SandParticle | None) -> bool:
         if not self.is_position_valid(row, col):
             return False
+        old_particle = self.cells[row][col]
         self.cells[row][col] = particle
-        self.mark_cache_dirty()
+        if old_particle is None and particle is not None:
+            self.particle_count += 1
+        elif old_particle is not None and particle is None:
+            self.particle_count -= 1
+        self._set_cache_cell(row, col, particle)
+        self._mark_mutated()
         return True
 
     def add_particle(self, particle: SandParticle) -> bool:
@@ -73,7 +115,9 @@ class Grid:
         col = int(getattr(particle, "x", 0) // self.cell_size)
         if self.is_cell_empty(row, col):
             self.cells[row][col] = particle
-            self.mark_cache_dirty()
+            self.particle_count += 1
+            self._set_cache_cell(row, col, particle)
+            self._mark_mutated()
             return True
         return False
 
@@ -86,8 +130,11 @@ class Grid:
     ) -> bool:
         if not self.is_cell_empty(row, col):
             return False
-        self.cells[row][col] = SandParticle(color=color, base_color=base_color if base_color else color)
-        self.mark_cache_dirty()
+        particle = SandParticle(color=color, base_color=base_color if base_color else color)
+        self.cells[row][col] = particle
+        self.particle_count += 1
+        self._set_cache_cell(row, col, particle)
+        self._mark_mutated()
         return True
 
     def remove_particle(self, row: int, col: int) -> SandParticle | None:
@@ -96,7 +143,9 @@ class Grid:
         particle = self.cells[row][col]
         if particle is not None:
             self.cells[row][col] = None
-            self.mark_cache_dirty()
+            self.particle_count -= 1
+            self._set_cache_cell(row, col, None)
+            self._mark_mutated()
         return particle
 
     def move_particle(self, row: int, col: int, next_row: int, next_col: int) -> bool:
@@ -107,13 +156,20 @@ class Grid:
             return False
         self.cells[row][col] = None
         self.cells[next_row][next_col] = particle
-        self.mark_cache_dirty()
+        self._set_cache_cell(row, col, None)
+        self._set_cache_cell(next_row, next_col, particle)
+        self._mark_mutated()
         return True
 
     def clear(self) -> None:
         self.cells = [[None for _ in range(self.columns)] for _ in range(self.rows)]
+        self.particle_count = 0
         self.highlighted_cells = set()
-        self.mark_cache_dirty()
+        self._color_grid_cache.fill(-1)
+        self._rgb_grid_cache.fill(0)
+        self._cache_dirty = False
+        self._surface_dirty = True
+        self._mark_mutated()
 
     def find_clear_regions(self) -> list[ClearRegion]:
         return find_wall_to_wall_clears(self)
@@ -154,7 +210,9 @@ class Grid:
                 self.cells[row][col] = None
             for index, particle in enumerate(reversed(particles)):
                 self.cells[self.rows - 1 - index][col] = particle
+        self.particle_count = sum(1 for row in range(self.rows) for col in range(self.columns) if self.cells[row][col] is not None)
         self.mark_cache_dirty()
+        self._mark_mutated()
 
     _apply_gravity = apply_column_gravity
 
@@ -162,20 +220,24 @@ class Grid:
         """Draw all particles to a pygame surface."""
         import pygame
 
-        for row in range(self.rows):
-            for col in range(self.columns):
-                particle = self.cells[row][col]
-                if particle is None:
-                    continue
-                pygame.draw.rect(
-                    window,
-                    getattr(particle, "color", (200, 200, 200)),
-                    (col * self.cell_size, row * self.cell_size, self.cell_size, self.cell_size),
-                )
+        rgb_grid = self.get_rgb_grid()
+        if self._surface_cache is None:
+            self._surface_cache = pygame.Surface((self.columns, self.rows))
+
+        if self._surface_dirty:
+            pygame.surfarray.blit_array(self._surface_cache, rgb_grid.swapaxes(0, 1))
+            self._surface_dirty = False
+
+        if self.cell_size == 1:
+            window.blit(self._surface_cache, (0, 0))
+        else:
+            pygame.transform.scale(self._surface_cache, (self.width, self.height), window)
 
     def copy(self) -> "Grid":
         new_grid = Grid(self.width, self.height, self.cell_size)
         new_grid.cells = deepcopy(self.cells)
+        new_grid.particle_count = self.particle_count
+        new_grid.mutation_version = self.mutation_version
         new_grid.highlighted_cells = set(self.highlighted_cells)
         new_grid.mark_cache_dirty()
         return new_grid
