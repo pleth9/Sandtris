@@ -83,9 +83,9 @@ Scoring lives in `sandtris.core.scoring`.
 sandtris/
   core/       Grid, particles, simulation, tetrominoes, clear detection, scoring
   app/        Pygame player app
-  ai/         Optional AI model/training compatibility
+  ai/         Optional headless AI environment, observations, rewards, heuristics, trainer
 player/       Compatibility launcher for the old command
-AI/           Legacy AI trainer entrypoint
+AI/           Compatibility launchers for old AI commands
 tests/        Headless pytest coverage for core gameplay
 ```
 
@@ -100,17 +100,33 @@ Public gameplay APIs include:
 
 ## AI Training
 
-The AI trainer is still experimental and computationally heavy. Install the AI extra first, then run:
+The AI trainer is experimental and computationally heavy. It now runs through a pygame-free headless environment with an explicit observation that includes:
+
+- settled sand color grid
+- active piece shape, color, rotation, x/y position, and board overlay
+- next piece shape/color
+- score, level, gravity, and ghost-row scalar context
+
+Install the AI extra first, then run the packaged trainer:
 
 ```bash
 python -m sandtris.ai.train
 ```
 
-The legacy command is also preserved:
+Useful short smoke run:
+
+```bash
+python -m sandtris.ai.train --episodes 1 --max-steps-per-episode 25 --checkpoint-every 0 --eval-every 0
+```
+
+The old top-level commands are compatibility launchers only:
 
 ```bash
 python AI/train.py
+python AI/headless_train.py
 ```
+
+The AI package also includes deterministic heuristic utilities for bridge-potential evaluation and placement-action enumeration. These are intended as debuggable baselines before larger neural architecture work.
 
 ## Development
 

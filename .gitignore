@@ -11,3 +11,4 @@ venv/
 loss_history.json
 headless_stats*.json
 steps_done*.json
+training_metrics*.csv
