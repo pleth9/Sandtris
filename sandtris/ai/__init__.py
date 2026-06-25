@@ -1,1 +1,1 @@
-"""Optional AI training package."""
+"""Optional headless AI environment, observations, rewards, heuristics, and training."""
