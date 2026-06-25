@@ -119,6 +119,31 @@ Useful short smoke run:
 python -m sandtris.ai.train --episodes 1 --max-steps-per-episode 25 --checkpoint-every 0 --eval-every 0
 ```
 
+## AI Evaluation And Benchmarks
+
+Use the evaluation module to measure policies without training or replay-buffer writes:
+
+```bash
+python -m sandtris.ai.eval --policy random --episodes 50 --seed 0
+python -m sandtris.ai.eval --policy heuristic --episodes 20 --seed 0
+python -m sandtris.ai.eval --policy model --model-path tetris_brain_observable_v1_cs6_bs36.pth --episodes 20 --device cpu --seed 0
+```
+
+The trainer also exposes a no-training eval-only path:
+
+```bash
+python -m sandtris.ai.train --eval-only --episodes 20 --device cpu
+python -m sandtris.ai.train --eval-only --episodes 20 --device mps --model-path tetris_brain_observable_v1_cs6_bs36.pth
+```
+
+Benchmark multiple policies in one run and save machine-readable metrics:
+
+```bash
+python -m sandtris.ai.eval --policies random heuristic model --model-path tetris_brain_observable_v1_cs6_bs36.pth --episodes 20 --device mps --out ai_eval_results.json --out-csv ai_benchmark.csv
+```
+
+Evaluation output reports aggregate score, median/min/max/std, pixels cleared, total reward, episode length, clear events, seed/config, device, and model path. JSON stores config plus per-episode metrics; CSV stores one row per episode.
+
 The old top-level commands are compatibility launchers only:
 
 ```bash

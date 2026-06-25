@@ -1,11 +1,15 @@
 import numpy as np
 
 from sandtris.ai.heuristic import (
+    choose_heuristic_placement,
     enumerate_placement_actions,
+    evaluate_placement_action,
     estimate_wall_bridge_potential,
     evaluate_board,
     iter_color_components,
+    remove_wall_to_wall_bridges,
 )
+from sandtris.ai.env import HeadlessSandtrisConfig, HeadlessSandtrisEnv
 from sandtris.core.constants import BASE_COLORS
 from sandtris.core.tetromino import SandTetromino
 
@@ -56,3 +60,37 @@ def test_placement_enumeration_exposes_rotation_and_target_columns():
     assert actions
     assert {action.rotation for action in actions} == {0, 1, 2, 3}
     assert min(action.target_column for action in actions) >= 0
+
+
+def test_wall_to_wall_bridge_removal_reports_clear_metrics():
+    board = np.zeros((4, 5), dtype=np.uint8)
+    board[2, :] = 1
+
+    clear_pixels, clear_events, cleared = remove_wall_to_wall_bridges(board)
+
+    assert clear_pixels == 5
+    assert clear_events == 1
+    assert not np.any(cleared[2, :])
+
+
+def test_heuristic_policy_is_deterministic_for_fixed_state():
+    config = HeadlessSandtrisConfig(
+        playfield_width=120,
+        playfield_height=180,
+        cell_size=6,
+        box_size=18,
+        action_interval=1,
+        max_placement_frames=80,
+    )
+    env_a = HeadlessSandtrisEnv(config=config, seed=4)
+    env_b = HeadlessSandtrisEnv(config=config, seed=4)
+    env_a.reset(seed=4)
+    env_b.reset(seed=4)
+
+    action_a = choose_heuristic_placement(env_a)
+    action_b = choose_heuristic_placement(env_b)
+    evaluation = evaluate_placement_action(env_a, action_a)
+
+    assert action_a == action_b
+    assert evaluation.action == action_a
+    assert isinstance(evaluation.score, float)

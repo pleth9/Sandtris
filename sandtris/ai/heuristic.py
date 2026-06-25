@@ -41,6 +41,18 @@ class BoardEvaluation:
     bridge_potential: float
 
 
+@dataclass(frozen=True)
+class PlacementEvaluation:
+    action: PlacementAction
+    score: float
+    board_score: float
+    bridge_potential: float
+    predicted_clear_pixels: int
+    predicted_clear_events: int
+    max_height: int
+    overflow_cells: int
+
+
 def iter_color_components(board_ids: np.ndarray) -> list[ComponentStats]:
     """Return 4-connected same-color components from a 0-empty board."""
     board = _as_board_ids(board_ids)
@@ -132,6 +144,136 @@ def evaluate_board(board_ids: np.ndarray, ghost_rows: int = 2) -> BoardEvaluatio
     )
 
 
+def choose_heuristic_placement(env: object) -> PlacementAction:
+    """Choose a deterministic placement action for the active Sandtris piece."""
+    tetromino = getattr(env, "active_tetromino", None)
+    config = getattr(env, "config", None)
+    if tetromino is None or config is None:
+        return PlacementAction(rotation=0, target_column=0)
+
+    actions = enumerate_placement_actions(
+        tetromino,
+        board_width=config.playfield_width,
+        cell_size=config.cell_size,
+        box_size=config.box_size,
+        wall_left=config.wall_thickness,
+        wall_right=config.playfield_width - config.wall_thickness,
+    )
+    if not actions:
+        return PlacementAction(rotation=0, target_column=0)
+
+    best: PlacementEvaluation | None = None
+    for action in actions:
+        evaluation = evaluate_placement_action(env, action)
+        if best is None or evaluation.score > best.score:
+            best = evaluation
+
+    return actions[0] if best is None else best.action
+
+
+def evaluate_placement_action(env: object, action: PlacementAction) -> PlacementEvaluation:
+    """Score one placement using a fast deterministic Sandtris approximation."""
+    observation = env.observe()
+    config = env.config
+    board = np.asarray(observation.board, dtype=np.uint8)
+    color_id = int(observation.active_piece_features[1]) or 1
+    projected_board, overflow_cells = simulate_placement_board(
+        board,
+        env.active_tetromino,
+        action,
+        cell_size=config.cell_size,
+        box_size=config.box_size,
+        color_id=color_id,
+    )
+    projected_eval = evaluate_board(projected_board, ghost_rows=config.ghost_rows)
+    clear_pixels, clear_events, cleared_board = remove_wall_to_wall_bridges(projected_board)
+    if clear_pixels:
+        cleared_board = apply_column_gravity(cleared_board)
+    settled_eval = evaluate_board(cleared_board, ghost_rows=config.ghost_rows)
+
+    score = (
+        settled_eval.score
+        + projected_eval.bridge_potential * 6.0
+        + clear_pixels * 0.50
+        + clear_events * 25.0
+        - overflow_cells * 10.0
+    )
+    return PlacementEvaluation(
+        action=action,
+        score=float(score),
+        board_score=settled_eval.score,
+        bridge_potential=projected_eval.bridge_potential,
+        predicted_clear_pixels=int(clear_pixels),
+        predicted_clear_events=int(clear_events),
+        max_height=settled_eval.max_height,
+        overflow_cells=int(overflow_cells),
+    )
+
+
+def simulate_placement_board(
+    board_ids: np.ndarray,
+    tetromino: SandTetromino,
+    action: PlacementAction,
+    *,
+    cell_size: int,
+    box_size: int,
+    color_id: int,
+) -> tuple[np.ndarray, int]:
+    """Approximate the settled board after dropping a placement action.
+
+    Sandtris boxes shatter into many grid cells. This fast scorer projects
+    those cells into their target columns and stacks them downward, which keeps
+    the policy deterministic and headless while still optimizing the game's
+    wall-to-wall color objective.
+    """
+    board = np.array(_as_board_ids(board_ids), dtype=np.uint8, copy=True)
+    if board.size == 0:
+        return board, 0
+
+    box_cells = max(1, int(round(box_size / max(1, cell_size))))
+    offsets = _offsets_after_rotations(tetromino, action.rotation)
+    min_dx = min(dx for dx, _dy in offsets)
+    overflow_cells = 0
+
+    for dx, dy in sorted(offsets, key=lambda offset: (offset[1], offset[0]), reverse=True):
+        left_col = action.target_column + (dx - min_dx) * box_cells
+        for local_col in range(box_cells):
+            col = left_col + local_col
+            for _local_row in range(box_cells):
+                if not _drop_color_cell(board, col, color_id):
+                    overflow_cells += 1
+
+    return board, overflow_cells
+
+
+def remove_wall_to_wall_bridges(board_ids: np.ndarray) -> tuple[int, int, np.ndarray]:
+    """Remove same-color wall bridges from an ID board and report clear size."""
+    board = np.array(_as_board_ids(board_ids), dtype=np.uint8, copy=True)
+    positions = _wall_to_wall_positions(board)
+    if not positions:
+        return 0, 0, board
+
+    clear_positions = {position for region in positions for position in region}
+    for row, col in clear_positions:
+        board[row, col] = 0
+    return len(clear_positions), len(positions), board
+
+
+def apply_column_gravity(board_ids: np.ndarray) -> np.ndarray:
+    """Compact non-empty board IDs downward in each column."""
+    board = np.array(_as_board_ids(board_ids), dtype=np.uint8, copy=True)
+    if board.size == 0:
+        return board
+
+    rows, cols = board.shape
+    settled = np.zeros_like(board)
+    for col in range(cols):
+        values = [int(board[row, col]) for row in range(rows) if int(board[row, col]) > 0]
+        for index, value in enumerate(reversed(values)):
+            settled[rows - 1 - index, col] = value
+    return settled
+
+
 def enumerate_placement_actions(
     tetromino: SandTetromino,
     *,
@@ -191,6 +333,38 @@ def _offsets_after_rotations(tetromino: SandTetromino, rotations: int) -> list[t
     return clone.offsets
 
 
+def _drop_color_cell(board: np.ndarray, col: int, color_id: int) -> bool:
+    if col < 0 or col >= board.shape[1]:
+        return False
+    empty_rows = np.flatnonzero(board[:, col] == 0)
+    if empty_rows.size == 0:
+        return False
+    board[int(empty_rows[-1]), col] = color_id
+    return True
+
+
+def _wall_to_wall_positions(board_ids: np.ndarray) -> list[set[tuple[int, int]]]:
+    board = _as_board_ids(board_ids)
+    if board.size == 0:
+        return []
+
+    rows, cols = board.shape
+    visited = np.zeros((rows, cols), dtype=bool)
+    regions: list[set[tuple[int, int]]] = []
+
+    for row in range(rows):
+        for col in range(cols):
+            color = int(board[row, col])
+            if color <= 0 or visited[row, col]:
+                continue
+            positions = _collect_component(board, visited, row, col, color)
+            col_values = [position[1] for position in positions]
+            if min(col_values) == 0 and max(col_values) == cols - 1:
+                regions.append(set(positions))
+
+    return regions
+
+
 def _as_board_ids(board_ids: np.ndarray) -> np.ndarray:
     board = np.asarray(board_ids)
     if board.size and int(np.min(board)) < 0:
@@ -201,10 +375,16 @@ def _as_board_ids(board_ids: np.ndarray) -> np.ndarray:
 __all__ = [
     "BoardEvaluation",
     "ComponentStats",
+    "PlacementEvaluation",
+    "apply_column_gravity",
+    "choose_heuristic_placement",
     "column_heights",
     "count_danger_cells",
     "enumerate_placement_actions",
+    "evaluate_placement_action",
     "estimate_wall_bridge_potential",
     "evaluate_board",
     "iter_color_components",
+    "remove_wall_to_wall_bridges",
+    "simulate_placement_board",
 ]

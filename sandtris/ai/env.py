@@ -136,6 +136,7 @@ class HeadlessSandtrisEnv:
         info["placement_frames"] = frames
         info["placement_rotation"] = action.rotation % 4
         info["placement_target_column"] = action.target_column
+        info["placement_target_x"] = action.target_x
         return observation, reward, done, info
 
     def _finish_step(
