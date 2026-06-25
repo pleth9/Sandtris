@@ -12,3 +12,8 @@ loss_history.json
 headless_stats*.json
 steps_done*.json
 training_metrics*.csv
+ai_eval_results*.json
+ai_eval_results*.csv
+ai_benchmark*.csv
+ai_benchmark*.json
+benchmark_results*.json

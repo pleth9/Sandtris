@@ -55,6 +55,13 @@ METRIC_FIELDS = (
     "decisions_per_second",
     "train_steps",
     "loss",
+    "loss_mean",
+    "q_mean",
+    "q_max",
+    "learning_rate",
+    "eval_reward",
+    "eval_pixels",
+    "eval_steps",
 )
 
 
@@ -75,6 +82,10 @@ def train(args: argparse.Namespace) -> None:
     encoder = DEFAULT_ENCODER
     device = choose_device(args.device)
     model_path, stats_path, steps_path, metrics_path = training_paths(args.output_dir, config)
+    if args.eval_only:
+        run_eval_only(args, config, device, model_path)
+        return
+
     env = HeadlessSandtrisEnv(config=config, seed=args.seed)
     rows, cols = env.simulation.grid.rows, env.simulation.grid.columns
     net = TetrisNet(
@@ -111,6 +122,9 @@ def train(args: argparse.Namespace) -> None:
     last_log_at = started_at
     last_log_steps = steps_done
     last_loss: float | None = None
+    recent_losses: deque[float] = deque(maxlen=100)
+    recent_q_means: deque[float] = deque(maxlen=100)
+    recent_q_maxes: deque[float] = deque(maxlen=100)
     checkpoint_current = False
 
     print(f"Headless Sandtris training on {device}. Press Ctrl+C to checkpoint and stop.")
@@ -134,7 +148,11 @@ def train(args: argparse.Namespace) -> None:
 
             while episode_steps < args.max_steps_per_episode:
                 epsilon = max(EPSILON_END, EPSILON_START - steps_done / EPSILON_DECAY)
-                action_idx = choose_action(net, encoder, state, device, epsilon)
+                action_idx, q_mean, q_max = choose_action_with_diagnostics(net, encoder, state, device, epsilon)
+                if q_mean is not None:
+                    recent_q_means.append(q_mean)
+                if q_max is not None:
+                    recent_q_maxes.append(q_max)
                 next_state, reward, done, info = env.step(action_idx)
                 replay_buffer.append((state, action_idx, reward, next_state, done))
 
@@ -152,14 +170,23 @@ def train(args: argparse.Namespace) -> None:
                         target_net.eval()
                     if math.isnan(last_loss) or math.isinf(last_loss):
                         print(f"Skipping invalid loss value: {last_loss}")
+                    else:
+                        recent_losses.append(last_loss)
 
                 now = time.time()
                 if now - last_log_at >= args.log_every:
                     decisions_per_second = (steps_done - last_log_steps) / max(0.001, now - last_log_at)
+                    loss_mean = mean_recent(recent_losses)
+                    q_mean_recent = mean_recent(recent_q_means)
+                    q_max_recent = mean_recent(recent_q_maxes)
+                    learning_rate = float(optimizer.param_groups[0]["lr"])
+                    loss_text = "" if loss_mean is None else f" loss={loss_mean:.4f}"
+                    q_text = "" if q_mean_recent is None else f" q_mean={q_mean_recent:.3f} q_max={q_max_recent:.3f}"
                     print(
                         f"ep={episode} step={steps_done} eps={epsilon:.3f} "
                         f"score={int(float(info['score']))} pixels={int(info['pixels_cleared'])} "
                         f"reward={episode_reward:.1f} replay={len(replay_buffer)} "
+                        f"lr={learning_rate:.2g}{loss_text}{q_text} "
                         f"{decisions_per_second:.1f} decisions/s"
                     )
                     append_metric(
@@ -179,6 +206,10 @@ def train(args: argparse.Namespace) -> None:
                         decisions_per_second=f"{decisions_per_second:.3f}",
                         train_steps=train_steps_done,
                         loss="" if last_loss is None else f"{last_loss:.6f}",
+                        loss_mean="" if loss_mean is None else f"{loss_mean:.6f}",
+                        q_mean="" if q_mean_recent is None else f"{q_mean_recent:.6f}",
+                        q_max="" if q_max_recent is None else f"{q_max_recent:.6f}",
+                        learning_rate=f"{learning_rate:.10f}",
                     )
                     last_log_at = now
                     last_log_steps = steps_done
@@ -214,11 +245,16 @@ def train(args: argparse.Namespace) -> None:
                     )
                     last_eval_score = eval_stats["avg_score"]
                     last_eval_median = eval_stats["median_score"]
-                    best_eval_score = max(best_eval_score, eval_stats["best_score"])
+                    best_eval_score = max(best_eval_score, last_eval_score)
                     last_eval_steps = steps_done
+                    loss_mean = mean_recent(recent_losses)
+                    q_mean_recent = mean_recent(recent_q_means)
+                    q_max_recent = mean_recent(recent_q_maxes)
+                    learning_rate = float(optimizer.param_groups[0]["lr"])
                     print(
                         f"eval step={steps_done} eps={args.eval_epsilon:.3f} "
                         f"avg={last_eval_score:.1f} median={last_eval_median:.1f} "
+                        f"reward={eval_stats['mean_total_reward']:.2f} pixels={eval_stats['mean_pixels_cleared']:.1f} "
                         f"best_eval={best_eval_score:.1f}"
                     )
                     append_metric(
@@ -236,6 +272,13 @@ def train(args: argparse.Namespace) -> None:
                         replay_size=len(replay_buffer),
                         train_steps=train_steps_done,
                         loss="" if last_loss is None else f"{last_loss:.6f}",
+                        loss_mean="" if loss_mean is None else f"{loss_mean:.6f}",
+                        q_mean="" if q_mean_recent is None else f"{q_mean_recent:.6f}",
+                        q_max="" if q_max_recent is None else f"{q_max_recent:.6f}",
+                        learning_rate=f"{learning_rate:.10f}",
+                        eval_reward=f"{eval_stats['mean_total_reward']:.6f}",
+                        eval_pixels=f"{eval_stats['mean_pixels_cleared']:.6f}",
+                        eval_steps=f"{eval_stats['mean_episode_length']:.6f}",
                     )
 
                 if done:
@@ -247,6 +290,10 @@ def train(args: argparse.Namespace) -> None:
                 f"episode {episode} done: score={int(env.score)} pixels={env.pixels_cleared_total} "
                 f"reward={episode_reward:.1f} steps={episode_steps}"
             )
+            loss_mean = mean_recent(recent_losses)
+            q_mean_recent = mean_recent(recent_q_means)
+            q_max_recent = mean_recent(recent_q_maxes)
+            learning_rate = float(optimizer.param_groups[0]["lr"])
             append_metric(
                 metrics_path,
                 event="episode",
@@ -263,6 +310,10 @@ def train(args: argparse.Namespace) -> None:
                 replay_size=len(replay_buffer),
                 train_steps=train_steps_done,
                 loss="" if last_loss is None else f"{last_loss:.6f}",
+                loss_mean="" if loss_mean is None else f"{loss_mean:.6f}",
+                q_mean="" if q_mean_recent is None else f"{q_mean_recent:.6f}",
+                q_max="" if q_max_recent is None else f"{q_max_recent:.6f}",
+                learning_rate=f"{learning_rate:.10f}",
             )
             episode += 1
             completed_this_run += 1
@@ -310,12 +361,23 @@ def choose_action(
     device: torch.device,
     epsilon: float,
 ) -> int:
+    action, _q_mean, _q_max = choose_action_with_diagnostics(net, encoder, state, device, epsilon)
+    return action
+
+
+def choose_action_with_diagnostics(
+    net: TetrisNet,
+    encoder: ObservationEncoder,
+    state: SandtrisObservation,
+    device: torch.device,
+    epsilon: float,
+) -> tuple[int, float | None, float | None]:
     if random.random() < epsilon:
-        return random.randrange(N_CONTROL_ACTIONS)
+        return random.randrange(N_CONTROL_ACTIONS), None, None
     with torch.no_grad():
         board_input, meta_input = encoder.encode((state,), device)
         q_values = net(board_input, meta_input)
-        return int(q_values.argmax().item())
+        return int(q_values.argmax().item()), float(q_values.mean().item()), float(q_values.max().item())
 
 
 def evaluate_policy(
@@ -329,32 +391,69 @@ def evaluate_policy(
     seed: int,
 ) -> dict[str, float]:
     if episodes <= 0:
-        return {"avg_score": 0.0, "median_score": 0.0, "best_score": 0.0}
+        return {
+            "avg_score": 0.0,
+            "median_score": 0.0,
+            "best_score": 0.0,
+            "mean_total_reward": 0.0,
+            "mean_pixels_cleared": 0.0,
+            "mean_episode_length": 0.0,
+        }
 
-    was_training = net.training
-    net.eval()
-    random_state = random.getstate()
-    scores: list[float] = []
-    try:
-        eval_env = HeadlessSandtrisEnv(config=config, seed=seed)
-        for index in range(episodes):
-            state = eval_env.reset(seed=seed + index)
-            for _step in range(max_steps_per_episode):
-                action_idx = choose_action(net, encoder, state, device, epsilon)
-                state, _reward, done, _info = eval_env.step(action_idx)
-                if done:
-                    break
-            scores.append(float(eval_env.score))
-    finally:
-        random.setstate(random_state)
-        if was_training:
-            net.train()
+    from sandtris.ai.eval import evaluate_model_policy
 
+    result = evaluate_model_policy(
+        net,
+        encoder,
+        device,
+        config,
+        episodes,
+        max_steps_per_episode,
+        epsilon,
+        seed,
+    )
+    aggregate = result["aggregate"]
     return {
-        "avg_score": float(sum(scores) / len(scores)),
-        "median_score": float(statistics.median(scores)),
-        "best_score": float(max(scores)),
+        "avg_score": float(aggregate["mean_score"]),
+        "median_score": float(aggregate["median_score"]),
+        "best_score": float(aggregate["max_score"]),
+        "mean_total_reward": float(aggregate["mean_total_reward"]),
+        "mean_pixels_cleared": float(aggregate["mean_pixels_cleared"]),
+        "mean_episode_length": float(aggregate["mean_episode_length"]),
     }
+
+
+def run_eval_only(
+    args: argparse.Namespace,
+    config: HeadlessSandtrisConfig,
+    device: torch.device,
+    default_model_path: Path,
+) -> None:
+    from sandtris.ai.eval import print_benchmark_summary, run_benchmark
+
+    episodes = args.episodes if args.episodes > 0 else args.eval_episodes
+    model_path: str | Path | None = args.model_path
+    if args.policy == "model" and model_path is None:
+        if default_model_path.exists():
+            model_path = default_model_path
+        else:
+            print("No model checkpoint provided or found; evaluating fresh model weights.")
+
+    out_json, out_csv = resolve_eval_output_paths(args)
+    benchmark = run_benchmark(
+        policies=[args.policy],
+        episodes=episodes,
+        config=config,
+        max_steps_per_episode=args.max_steps_per_episode,
+        seed=args.seed,
+        device=device,
+        model_path=model_path,
+        epsilon=args.eval_epsilon,
+        random_action_mode=args.random_action_mode,
+        out_json=out_json,
+        out_csv=out_csv,
+    )
+    print_benchmark_summary(benchmark)
 
 
 def dqn_train_step(
@@ -472,6 +571,22 @@ def append_metric(metrics_path: Path, **values: object) -> None:
         writer.writerow({field: values.get(field, "") for field in METRIC_FIELDS})
 
 
+def resolve_eval_output_paths(args: argparse.Namespace) -> tuple[str | None, str | None]:
+    out_json = args.eval_out_json
+    out_csv = args.eval_out_csv
+    if args.eval_out:
+        suffix = Path(args.eval_out).suffix.lower()
+        if suffix == ".csv":
+            out_csv = args.eval_out
+        else:
+            out_json = args.eval_out
+    return out_json, out_csv
+
+
+def mean_recent(values: Sequence[float]) -> float | None:
+    return None if not values else float(statistics.fmean(values))
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Headless Sandtris DQN trainer.")
     parser.add_argument("--episodes", type=int, default=0, help="Episodes to train; 0 means forever.")
@@ -490,6 +605,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--eval-every", type=int, default=50_000, help="Decisions between eval runs; 0 disables eval.")
     parser.add_argument("--eval-episodes", type=int, default=5)
     parser.add_argument("--eval-epsilon", type=float, default=0.0)
+    parser.add_argument("--eval-only", action="store_true", help="Run evaluation without training or checkpoint writes.")
+    parser.add_argument("--policy", choices=("model", "random", "heuristic"), default="model", help="Policy for --eval-only.")
+    parser.add_argument("--model-path", default=None, help="Checkpoint path for --eval-only model evaluation.")
+    parser.add_argument("--eval-out", default=None, help="Evaluation output path; .csv writes CSV, otherwise JSON.")
+    parser.add_argument("--eval-out-json", default=None)
+    parser.add_argument("--eval-out-csv", default=None)
+    parser.add_argument("--random-action-mode", choices=("control", "placement"), default="control")
     parser.add_argument("--cell-size", type=int, default=DEFAULT_CONFIG.cell_size)
     parser.add_argument("--box-size", type=int, default=DEFAULT_CONFIG.box_size)
     parser.add_argument("--action-interval", type=int, default=DEFAULT_CONFIG.action_interval)
